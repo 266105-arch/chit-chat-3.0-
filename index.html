@@ -4487,5 +4487,310 @@
       if (!currentUser) auth.classList.remove('hidden');
     })();
   </script>
+<!-- ================= [음성 통화 기능 추가 시작] ================= -->
+<!-- UI 컨트롤 버튼 및 오디오 태그 -->
+<div id="voiceCallBar" style="position: fixed; top: 10px; right: 10px; z-index: 9999; display: flex; gap: 8px; align-items: center; background: rgba(0,0,0,0.75); padding: 8px 12px; border-radius: 25px; color: white; font-family: sans-serif; font-size: 13px;">
+  <span id="callStatusText" style="display:none;">연결 중...</span>
+  <button id="btnStartVoiceCall" style="background: #22c55e; color: white; border: none; padding: 6px 12px; border-radius: 15px; font-weight: bold; cursor: pointer;">📞 음성통화</button>
+  <button id="btnEndVoiceCall" style="background: #ef4444; color: white; border: none; padding: 6px 12px; border-radius: 15px; font-weight: bold; cursor: pointer; display: none;">🔴 종료</button>
+</div>
+<audio id="remoteVoiceAudio" autoplay></audio>
+
+<script>
+(function() {
+  // WebRTC 전역 변수
+  let localStream = null;
+  let remoteStream = null;
+  let peerConnection = null;
+
+  const rtcConfig = {
+    iceServers: [{ urls: 'stun:stun1.l.google.com:19302' }]
+  };
+
+  // DOM 요소
+  const btnStart = document.getElementById('btnStartVoiceCall');
+  const btnEnd = document.getElementById('btnEndVoiceCall');
+  const statusText = document.getElementById('callStatusText');
+  const remoteAudio = document.getElementById('remoteVoiceAudio');
+
+  // Firebase Database 레퍼런스 (기존 firebase 객체 활용)
+  // Firestore 사용 시 db.collection('calls') 형태로 자동 대응
+  const getCallRef = () => {
+    if (typeof firebase !== 'undefined' && firebase.database) {
+      return firebase.database().ref('chitchat_voice_call');
+    }
+    return null;
+  };
+
+  // 마이크 권한 요청
+  async function setupAudio() {
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      remoteStream = new MediaStream();
+      remoteAudio.srcObject = remoteStream;
+      return true;
+    } catch (e) {
+      alert('마이크 접근 권한이 필요합니다.');
+      return false;
+    }
+  }
+
+  // 1. 통화 걸기
+  btnStart.onclick = async () => {
+    const callRef = getCallRef();
+    if (!callRef) {
+      alert('Firebase가 초기화되지 않았습니다.');
+      return;
+    }
+
+    if (!await setupAudio()) return;
+
+    btnStart.style.display = 'none';
+    btnEnd.style.display = 'inline-block';
+    statusText.style.display = 'inline';
+    statusText.innerText = '신호 보내는 중...';
+
+    peerConnection = new RTCPeerConnection(rtcConfig);
+
+    localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+    peerConnection.ontrack = (event) => {
+      event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+    };
+
+    peerConnection.onicecandidate = (event) => {
+      if (event.candidate) {
+        callRef.child('offerCandidates').push(event.candidate.toJSON());
+      }
+    };
+
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    await callRef.child('offer').set({ sdp: offer.sdp, type: offer.type });
+
+    // Answer 수신 대기
+    callRef.child('answer').on('value', async (snapshot) => {
+      const data = snapshot.val();
+      if (data && peerConnection && !peerConnection.currentRemoteDescription) {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+        statusText.innerText = '🎙️ 통화 중';
+      }
+    });
+
+    callRef.child('answerCandidates').on('child_added', (snapshot) => {
+      if (peerConnection) {
+        peerConnection.addIceCandidate(new RTCIceCandidate(snapshot.val()));
+      }
+    });
+  };
+
+  // 2. 통화 감지 및 수신
+  window.addEventListener('load', () => {
+    const callRef = getCallRef();
+    if (!callRef) return;
+
+    callRef.child('offer').on('value', async (snapshot) => {
+      const data = snapshot.val();
+      if (data && !peerConnection) {
+        if (confirm('음성 통화해요! 받으시겠습니까?')) {
+          if (!await setupAudio()) return;
+
+          btnStart.style.display = 'none';
+          btnEnd.style.display = 'inline-block';
+          statusText.style.display = 'inline';
+          statusText.innerText = '🎙️ 통화 중';
+
+          peerConnection = new RTCPeerConnection(rtcConfig);
+
+          localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+          peerConnection.ontrack = (event) => {
+            event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+          };
+
+          peerConnection.onicecandidate = (event) => {
+            if (event.candidate) {
+              callRef.child('answerCandidates').push(event.candidate.toJSON());
+            }
+          };
+
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+          const answer = await peerConnection.createAnswer();
+          await peerConnection.setLocalDescription(answer);
+
+          await callRef.child('answer').set({ sdp: answer.sdp, type: answer.type });
+
+          callRef.child('offerCandidates').on('child_added', (snapshot) => {
+            if (peerConnection) {
+              peerConnection.addIceCandidate(new RTCIceCandidate(snapshot.val()));
+            }
+          });
+        }
+      }
+    });
+<!-- ================= [음성 통화 기능 추가 시작] ================= -->
+<div id="voiceCallBar" style="position: fixed; top: 10px; right: 10px; z-index: 9999; display: flex; gap: 8px; align-items: center; background: rgba(0,0,0,0.75); padding: 8px 12px; border-radius: 25px; color: white; font-family: sans-serif; font-size: 13px;">
+  <span id="callStatusText" style="display:none;">연결 중...</span>
+  <button id="btnStartVoiceCall" style="background: #22c55e; color: white; border: none; padding: 6px 12px; border-radius: 15px; font-weight: bold; cursor: pointer;">📞 음성통화</button>
+  <button id="btnEndVoiceCall" style="background: #ef4444; color: white; border: none; padding: 6px 12px; border-radius: 15px; font-weight: bold; cursor: pointer; display: none;">🔴 종료</button>
+</div>
+<audio id="remoteVoiceAudio" autoplay></audio>
+
+<script>
+(function() {
+  let localStream = null;
+  let remoteStream = null;
+  let peerConnection = null;
+
+  const rtcConfig = {
+    iceServers: [{ urls: 'stun:stun1.l.google.com:19302' }]
+  };
+
+  const btnStart = document.getElementById('btnStartVoiceCall');
+  const btnEnd = document.getElementById('btnEndVoiceCall');
+  const statusText = document.getElementById('callStatusText');
+  const remoteAudio = document.getElementById('remoteVoiceAudio');
+
+  const getCallRef = () => {
+    if (typeof firebase !== 'undefined' && firebase.database) {
+      return firebase.database().ref('chitchat_voice_call');
+    }
+    return null;
+  };
+
+  async function setupAudio() {
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      remoteStream = new MediaStream();
+      remoteAudio.srcObject = remoteStream;
+      return true;
+    } catch (e) {
+      alert('마이크 접근 권한이 필요합니다.');
+      return false;
+    }
+  }
+
+  btnStart.onclick = async () => {
+    const callRef = getCallRef();
+    if (!callRef) {
+      alert('Firebase가 초기화되지 않았습니다.');
+      return;
+    }
+
+    if (!await setupAudio()) return;
+
+    btnStart.style.display = 'none';
+    btnEnd.style.display = 'inline-block';
+    statusText.style.display = 'inline';
+    statusText.innerText = '신호 보내는 중...';
+
+    peerConnection = new RTCPeerConnection(rtcConfig);
+
+    localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+    peerConnection.ontrack = (event) => {
+      event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+    };
+
+    peerConnection.onicecandidate = (event) => {
+      if (event.candidate) {
+        callRef.child('offerCandidates').push(event.candidate.toJSON());
+      }
+    };
+
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    await callRef.child('offer').set({ sdp: offer.sdp, type: offer.type });
+
+    callRef.child('answer').on('value', async (snapshot) => {
+      const data = snapshot.val();
+      if (data && peerConnection && !peerConnection.currentRemoteDescription) {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+        statusText.innerText = '🎙️ 통화 중';
+      }
+    });
+
+    callRef.child('answerCandidates').on('child_added', (snapshot) => {
+      if (peerConnection) {
+        peerConnection.addIceCandidate(new RTCIceCandidate(snapshot.val()));
+      }
+    });
+  };
+
+  window.addEventListener('load', () => {
+    const callRef = getCallRef();
+    if (!callRef) return;
+
+    callRef.child('offer').on('value', async (snapshot) => {
+      const data = snapshot.val();
+      if (data && !peerConnection) {
+        if (confirm('음성 통화해요! 받으시겠습니까?')) {
+          if (!await setupAudio()) return;
+
+          btnStart.style.display = 'none';
+          btnEnd.style.display = 'inline-block';
+          statusText.style.display = 'inline';
+          statusText.innerText = '🎙️ 통화 중';
+
+          peerConnection = new RTCPeerConnection(rtcConfig);
+
+          localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+          peerConnection.ontrack = (event) => {
+            event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+          };
+
+          peerConnection.onicecandidate = (event) => {
+            if (event.candidate) {
+              callRef.child('answerCandidates').push(event.candidate.toJSON());
+            }
+          };
+
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+          const answer = await peerConnection.createAnswer();
+          await peerConnection.setLocalDescription(answer);
+
+          await callRef.child('answer').set({ sdp: answer.sdp, type: answer.type });
+
+          callRef.child('offerCandidates').on('child_added', (snapshot) => {
+            if (peerConnection) {
+              peerConnection.addIceCandidate(new RTCIceCandidate(snapshot.val()));
+            }
+          });
+        }
+      }
+    });
+
+    callRef.on('child_removed', () => {
+      if (peerConnection) {
+        closeCall();
+        alert('통화가 종료되었습니다.');
+      }
+    });
+  });
+
+  btnEnd.onclick = () => {
+    const callRef = getCallRef();
+    if (callRef) callRef.remove();
+    closeCall();
+  };
+
+  function closeCall() {
+    if (peerConnection) {
+      peerConnection.close();
+      peerConnection = null;
+    }
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      localStream = null;
+    }
+    btnStart.style.display = 'inline-block';
+    btnEnd.style.display = 'none';
+    statusText.style.display = 'none';
+    remoteAudio.srcObject = null;
+  }
+})();
+</script>
 </body>
 </html>
+   
